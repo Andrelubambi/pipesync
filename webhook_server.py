@@ -8,7 +8,7 @@ import pandas as pd
 
 load_dotenv()
 EVENT_SECRET = os.getenv("EVENT_SECRET_TOKEN", "")
-OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "./data2"))
+OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "./data"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI()

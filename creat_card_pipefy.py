@@ -8,7 +8,7 @@ PIPE_ID = "306939241"
 PHASE_ID = "341842076" # Inbox
 URL = "https://api.pipefy.com/graphql"
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
-META_TOTAL = 150
+META_TOTAL = 200
 
 def get_current_count():
     query = "{ pipe(id: \"%s\") { cards_count } }" % PIPE_ID
