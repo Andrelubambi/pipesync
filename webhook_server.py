@@ -8,27 +8,31 @@ import pandas as pd
 
 load_dotenv()
 EVENT_SECRET = os.getenv("EVENT_SECRET_TOKEN", "")
-OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "./data"))
+OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "./data2"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI()
 
 def append_event(row: dict):
-    df = pd.DataFrame([row])
-    # Acrescenta num CSV “append-only” (ou substitui por uma BD)
     out = OUTPUT_DIR / "events_webhook.csv"
+    df = pd.DataFrame([row])
     header = not out.exists()
     df.to_csv(out, mode="a", header=header, index=False)
 
+@app.get("/")
+def home():
+    return {"message": "PipeSync Omatapalo - Server is Running!"}
+
+
 @app.post("/pipefy/webhook")
 async def pipefy_webhook(request: Request, x_secret_token: str = Header(None)):
+    # Validação simples
     if EVENT_SECRET and x_secret_token != EVENT_SECRET:
         raise HTTPException(status_code=401, detail="Invalid signature")
 
     payload = await request.json()
     now_utc = datetime.now(timezone.utc).isoformat()
 
-    # O payload varia por action; aqui capturamos campos comuns
     event = {
         "received_at_utc": now_utc,
         "action": payload.get("action") or (payload.get("event") or {}).get("action"),
@@ -44,3 +48,4 @@ async def pipefy_webhook(request: Request, x_secret_token: str = Header(None)):
 
 
 # Rub server python -m uvicorn webhook_server:app --host 0.0.0.0 --port 8080
+# python manage_webhook.py

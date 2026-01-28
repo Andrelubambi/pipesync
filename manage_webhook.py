@@ -1,11 +1,11 @@
 # manage_webhook.py
-import os, json, requests
+import os, requests
 from dotenv import load_dotenv
 
 load_dotenv()
 TOKEN = os.getenv("PIPEFY_TOKEN")
-PIPE_ID = os.getenv("PIPE_ID")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # ex.: https://tua-api.com/pipefy/webhook
+PIPE_ID = int(os.getenv("PIPE_ID"))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 API_URL = "https://api.pipefy.com/graphql"
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 
@@ -18,12 +18,13 @@ def create_webhook():
     }
     """
     input_obj = {
-      "actions": ["card.move", "card.field_update"],
+      "actions": ["card.move", "card.field_update", "card.create"],
       "name": "ETL_PowerBI",
-      "pipe_id": int(PIPE_ID),
+      "pipe_id": PIPE_ID,
       "url": WEBHOOK_URL,
-      # Exemplo de filtros: só movimentos para a fase X
+      # Exemplos de filtros (opcionais):
       # "filters": "{\"card.move\": {\"to_phase_id\": [123456]}}"
+      # "overridePrevious": True
     }
     r = requests.post(API_URL, headers=HEADERS, json={"query": mutation, "variables": {"input": input_obj}})
     r.raise_for_status()
