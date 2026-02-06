@@ -1,0 +1,35 @@
+query GetPipeOverview($pipeId: ID!) {
+  pipe(id: $pipeId) {
+    id
+    name
+    description
+    phases {
+      id
+      name
+      cards_count
+      description
+      cards(first: 50) {
+        edges {
+          node {
+            id
+            title
+            created_at
+            fields {
+              name
+              value
+            }
+          }
+        }
+      }
+    }
+    start_form_fields {
+      id
+      label
+      internal_id
+      description
+      required
+      type
+      options
+    }
+  }
+}

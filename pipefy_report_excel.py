@@ -1,4 +1,6 @@
+from asyncio.log import logger
 import os
+import io
 from pathlib import Path
 from datetime import datetime
 import requests
@@ -47,21 +49,25 @@ query GetCards($pipeId: ID!, $first: Int, $after: String) {
 }
 """
 
-def execute_gql(query: str, variables: dict):
-    """Executa chamadas GraphQL para a API do Pipefy."""
-    response = requests.post(API_URL, headers=HEADERS, json={"query": query, "variables": variables}, timeout=60)
+def execute_gql(query: str, variables: dict, token: str):
+    """Executa chamadas GraphQL usando o token fornecido dinamicamente."""
+    headers = {
+        "Authorization": f"Bearer {token}", 
+        "Content-Type": "application/json"
+    }
+    response = requests.post(API_URL, headers=headers, json={"query": query, "variables": variables}, timeout=60)
+    
     if response.status_code != 200:
-        print(f"[ERRO] Falha na API: {response.status_code}")
-        response.raise_for_status()
+        raise RuntimeError(f"Erro na API Pipefy: {response.status_code} - {response.text}")
     
     data = response.json()
     if "errors" in data:
         raise RuntimeError(f"Erro na Query: {data['errors']}")
     return data["data"]
 
-def get_pipe_metadata(pipe_id: str):
-    """Obtém estrutura do pipe (campos e fases)."""
-    data = execute_gql(PIPE_SCHEMA_QUERY, {"pipeId": pipe_id})
+def get_pipe_metadata(pipe_id: str, token: str):
+    """Obtém estrutura do pipe com o token dinâmico."""
+    data = execute_gql(PIPE_SCHEMA_QUERY, {"pipeId": pipe_id}, token)
     pipe = data["pipe"] or {}
     return {
         "id": pipe.get("id"),
@@ -70,13 +76,13 @@ def get_pipe_metadata(pipe_id: str):
         "phases": pipe.get("phases", [])
     }
 
-def fetch_all_cards(pipe_id: str, page_size: int = 200):
-    """Busca todos os cards do pipe com paginação."""
+def fetch_all_cards(pipe_id: str, token: str, page_size: int = 200):
+    """Busca todos os cards com o token dinâmico."""
     cursor = None
     all_nodes = []
     
     while True:
-        data = execute_gql(CARDS_QUERY, {"pipeId": pipe_id, "first": page_size, "after": cursor})
+        data = execute_gql(CARDS_QUERY, {"pipeId": pipe_id, "first": page_size, "after": cursor}, token)
         cards_data = data["cards"]
         all_nodes.extend([edge["node"] for edge in cards_data["edges"]])
         
@@ -87,19 +93,18 @@ def fetch_all_cards(pipe_id: str, page_size: int = 200):
     return all_nodes
 
 def format_to_angola_time(iso_date: str):
-    """Converte UTC para GMT+1 (Angola)."""
     if not iso_date: return None
     ts_utc = pd.to_datetime(iso_date, utc=True, errors="coerce")
     if pd.isna(ts_utc): return None
     return (ts_utc + pd.Timedelta(hours=1)).tz_localize(None)
 
-def generate_excel_report_to_server(pipe_id: str):
-    """Gera o relatório Excel e retorna o caminho do ficheiro."""
-    print(f"[LOG] Iniciando exportação do Pipe: {pipe_id}")
+def generate_excel_stream(pipe_id: str, token: str):
+    """Gera o Excel em memória usando o token recebido da API."""
+    logger.info(f"Gerando stream para Pipe: {pipe_id}")
     
     # 1. Obter Dados
-    meta = get_pipe_metadata(pipe_id)
-    cards = fetch_all_cards(pipe_id)
+    meta = get_pipe_metadata(pipe_id, token)
+    cards = fetch_all_cards(pipe_id, token)
     
     # 2. Processar DataFrame Principal
     rows = [{
@@ -144,16 +149,29 @@ def generate_excel_report_to_server(pipe_id: str):
                 })
         pd.DataFrame(phases_data).to_excel(writer, sheet_name="Structure_Metadata", index=False)
 
-    print(f"[SUCESSO] Relatório gerado em: {file_path}")
+    logger.info(f"[SUCESSO] Relatório gerado em: {file_path}")
     return file_path
 
-def generate_excel_stream(pipe_id: str):
+
+def generate_excel_report_to_server(pipe_id: str, token: str):
+    """Gera o Excel no disco usando o token dinâmico."""
+    buffer = generate_excel_stream(pipe_id, token)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_path = OUTPUT_DIR / f"report_{pipe_id}_{timestamp}.xlsx"
+    
+    with open(file_path, "wb") as f:
+        f.write(buffer.getbuffer())
+        
+    return str(file_path)
+
+def generate_excel_stream(pipe_id: str, token: str):
     """Gera o relatório Excel em memória e retorna o buffer BytesIO."""
     print(f"[LOG] Iniciando geração de stream para o Pipe: {pipe_id}")
     
     # 1. Obter Dados
-    meta = get_pipe_metadata(pipe_id)
-    cards = fetch_all_cards(pipe_id)
+    meta = get_pipe_metadata(pipe_id, token)
+    cards = fetch_all_cards(pipe_id, token)
     
     # 2. Processar Dados
     rows = [{
@@ -200,5 +218,5 @@ def generate_excel_stream(pipe_id: str):
 
     # Move o ponteiro para o início do arquivo virtual
     output.seek(0)
-    print(f"[SUCESSO] Stream do Excel pronto para o Pipe: {pipe_id}")
+    logger.info(f"[SUCESSO] Stream do Excel pronto para o Pipe: {pipe_id}")
     return output
