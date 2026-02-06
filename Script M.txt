@@ -1,52 +1,73 @@
 let
     vToken = "Bearer eyJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJQaXBlZnkiLCJpYXQiOjE3Njk3ODU1MDAsImp0aSI6IjBjYmZmZmMwLWJiNjMtNDdmOS1hMTgyLThmOTZiODZjYzNhNyIsInN1YiI6MzA3NDQxNzczLCJ1c2VyIjp7ImlkIjozMDc0NDE3NzMsImVtYWlsIjoiYW5kcmVsdWJhbWJpQG9tYXRhcGFsby5jb20ifSwidXNlcl90eXBlIjoiYXV0aGVudGljYXRlZCJ9.q0ADvblqO1VD2ZvoHNw6xmMJd6FiaO9GRTaqk3Xo8UsSTQKyaoELEDAEVgkqILCVHO3aKRS7OQ_5Tc7FLH2S9w",
-    vPipeID = Number.ToText(304801263), 
+    vPipeID = "304801263", 
     vUrl = "https://api.pipefy.com/graphql",
+    vAgora = DateTime.LocalNow(),
 
-    // Função de busca com paginação para garantir os 5000+ cards
+    // Função interna para formatar qualquer duração em texto legível
+    fnFormatarTempo = (duracao as duration) =>
+        let
+            anos = Number.IntegerDivide(Duration.Days(duracao), 365),
+            dias = Number.Mod(Duration.Days(duracao), 365),
+            horas = Duration.Hours(duracao),
+            minutos = Duration.Minutes(duracao),
+            segundos = Duration.Seconds(duracao),
+            texto = 
+                (if anos > 0 then Text.From(anos) & " ano(s) " else "") &
+                (if dias > 0 then Text.From(dias) & " dia(s) " else "") &
+                (if horas > 0 then Text.From(horas) & "h " else "") &
+                (if minutos > 0 then Text.From(minutos) & "min " else "") &
+                (if segundos > 0 and dias = 0 and anos = 0 then Text.From(Number.Round(segundos,0)) & "s" else "")
+        in 
+            if texto = "" then "Agora" else texto,
+
     GetCards = (cursor) =>
         let
-            vCursor = if cursor = null then "" else "after: """ & cursor & """",
-            queryBody = "{ ""query"": ""{ allCards(pipeId: " & vPipeID & ", " & vCursor & ") { pageInfo { hasNextPage endCursor } edges { node { id title createdAt createdBy { name } current_phase { name } fields { name value } } } } }"" }",
-            response = Web.Contents(vUrl, [
-                Headers = [#"Authorization"=vToken, #"Content-Type"="application/json"],
-                Content = Text.ToBinary(queryBody)
-            ]),
+            vCursor = if cursor = null then "" else ", after: """ & cursor & """",
+            queryBody = "{ ""query"": ""{ allCards(pipeId: " & vPipeID & ", first: 50" & vCursor & ") { pageInfo { hasNextPage endCursor } edges { node { id title createdAt updated_at createdBy { name } current_phase { name } fields { name value } phases_history { phase { name } firstTimeIn lastTimeOut } } } } }"" }",
+            response = Web.Contents(vUrl, [Headers = [#"Authorization"=vToken, #"Content-Type"="application/json"], Content = Text.ToBinary(queryBody)]),
             json = Json.Document(response)[data][allCards]
         in
             json,
 
-    // Gera a lista de todas as páginas
-    AllPages = List.Generate(
-        () => [Result = GetCards(null)],
-        each [Result] <> null,
-        each [Result = if [Result][pageInfo][hasNextPage] then GetCards([Result][pageInfo][endCursor]) else null],
-        each [Result][edges]
-    ),
-
-    // Consolidação dos dados crus
+    AllPages = List.Generate(() => [Result = GetCards(null)], each [Result] <> null, each [Result = if [Result][pageInfo][hasNextPage] then GetCards([Result][pageInfo][endCursor]) else null], each [Result][edges]),
     #"Tabela Final" = Table.FromList(AllPages, Splitter.SplitByNothing(), null, null, ExtraValues.Error),
     #"Expansão Nodes" = Table.ExpandListColumn(#"Tabela Final", "Column1"),
     #"Campos Extraídos" = Table.ExpandRecordColumn(#"Expansão Nodes", "Column1", {"node"}),
-    #"Colunas Detalhadas" = Table.ExpandRecordColumn(#"Campos Extraídos", "node", {"id", "title", "createdAt", "createdBy", "current_phase", "fields"}),
-    #"Criador" = Table.ExpandRecordColumn(#"Colunas Detalhadas", "createdBy", {"name"}, {"Criador"}),
+    #"Colunas Detalhadas" = Table.ExpandRecordColumn(#"Campos Extraídos", "node", {"id", "title", "createdAt", "updated_at", "createdBy", "current_phase", "fields", "phases_history"}),
+    
+    #"Expandir Histórico" = Table.ExpandListColumn(#"Colunas Detalhadas", "phases_history"),
+    #"Detalhar Histórico" = Table.ExpandRecordColumn(#"Expandir Histórico", "phases_history", {"phase", "firstTimeIn", "lastTimeOut"}, {"Hist.Fase", "Entrada na Fase", "Saída na Fase"}),
+    
+    // --- LÓGICA DA DATA DE SAÍDA ---
+    #"Tratar Saída" = Table.AddColumn(#"Detalhar Histórico", "Saída ou Status", each if [Saída na Fase] = null then "Ainda na fase" else [Saída na Fase]),
+
+    #"Nome Fase Hist" = Table.ExpandRecordColumn(#"Tratar Saída", "Hist.Fase", {"name"}, {"Fase do Histórico"}),
+    #"Criador" = Table.ExpandRecordColumn(#"Nome Fase Hist", "createdBy", {"name"}, {"Criador"}),
     #"Fase Atual" = Table.ExpandRecordColumn(#"Criador", "current_phase", {"name"}, {"Fase Atual"}),
     
-    // TRATAMENTO DE ERROS E DUPLICADAS (O "Pulo do Gato")
-    #"fields Expandida" = Table.ExpandListColumn(#"Fase Atual", "fields"),
+    #"Conversão Tipos" = Table.TransformColumnTypes(#"Fase Atual",{{"Entrada na Fase", type datetime}, {"updated_at", type datetime}}),
+    
+    // --- CÁLCULOS DE TEMPO ---
+    #"Adicionar Tempos" = Table.AddColumn(#"Conversão Tipos", "Duração na Fase", each (if [Saída na Fase] = null then vAgora else DateTime.From([Saída na Fase])) - [Entrada na Fase]),
+    #"Adicionar Idade Atualização" = Table.AddColumn(#"Adicionar Tempos", "Tempo desde última atualização", each vAgora - [updated_at]),
+
+    // --- FORMATAÇÃO TEXTUAL ---
+    #"Tempo na Fase Texto" = Table.AddColumn(#"Adicionar Idade Atualização", "Tempo Gasto na Fase", each fnFormatarTempo([Duração na Fase])),
+    #"Tempo Atualização Texto" = Table.AddColumn(#"Tempo na Fase Texto", "Há quanto tempo foi atualizado", each fnFormatarTempo([Tempo desde última atualização])),
+
+    #"fields Expandida" = Table.ExpandListColumn(#"Tempo Atualização Texto", "fields"),
     #"Campos Nome Valor" = Table.ExpandRecordColumn(#"fields Expandida", "fields", {"name", "value"}),
     #"Filtro Nulos" = Table.SelectRows(#"Campos Nome Valor", each ([name] <> null)),
 
-    // Agrupamento para eliminar o erro de "Demasiados elementos"
-    #"Agrupado para Evitar Erros" = Table.Group(#"Filtro Nulos", {"id", "title", "createdAt", "Criador", "Fase Atual", "name"}, {
+    #"Agrupado" = Table.Group(#"Filtro Nulos", {"id", "title", "createdAt", "Criador", "Fase Atual", "Fase do Histórico", "Entrada na Fase", "Saída ou Status", "Tempo Gasto na Fase", "Há quanto tempo foi atualizado", "name"}, {
         {"ValorUnico", each List.First(List.RemoveItems([value], {null, ""})), type any}
     }),
 
-    // DINAMISMO TOTAL: O script descobre as colunas sozinho
-    ListaDeCampos = List.Distinct(#"Agrupado para Evitar Erros"[name]),
-    #"Resultado Final" = Table.Pivot(#"Agrupado para Evitar Erros", ListaDeCampos, "name", "ValorUnico"),
+    ListaDeCampos = List.Distinct(#"Agrupado"[name]),
+    #"Resultado Pivot" = Table.Pivot(#"Agrupado", ListaDeCampos, "name", "ValorUnico"),
     
-    // Toque final: Data da última atualização para o RH
-    #"Ultima Atualização" = Table.AddColumn(#"Resultado Final", "Dados Atualizados Em", each DateTime.LocalNow(), type datetime)
+    ColunasFinais = Table.ColumnNames(#"Resultado Pivot"),
+    #"Tabela Finalíssima" = Table.ReplaceValue(#"Resultado Pivot", null, "Não Definido", Replacer.ReplaceValue, ColunasFinais)
 in
-    #"Ultima Atualização"
+    #"Tabela Finalíssima"

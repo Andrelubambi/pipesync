@@ -1,0 +1,69 @@
+let
+    vToken = "Bearer eyJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJQaXBlZnkiLCJpYXQiOjE3Njk3ODU1MDAsImp0aSI6IjBjYmZmZmMwLWJiNjMtNDdmOS1hMTgyLThmOTZiODZjYzNhNyIsInN1YiI6MzA3NDQxNzczLCJ1c2VyIjp7ImlkIjozMDc0NDE3NzMsImVtYWlsIjoiYW5kcmVsdWJhbWJpQG9tYXRhcGFsby5jb20ifSwidXNlcl90eXBlIjoiYXV0aGVudGljYXRlZCJ9.q0ADvblqO1VD2ZvoHNw6xmMJd6FiaO9GRTaqk3Xo8UsSTQKyaoELEDAEVgkqILCVHO3aKRS7OQ_5Tc7FLH2S9w",
+    vPipeID = "304801263", 
+    vUrl = "https://api.pipefy.com/graphql",
+    vAgora = DateTime.LocalNow(),
+
+    // Função para deixar o tempo legível
+    fnFormatarTempo = (duracao as duration) =>
+        let
+            anos = Number.IntegerDivide(Duration.Days(duracao), 365),
+            dias = Number.Mod(Duration.Days(duracao), 365),
+            horas = Duration.Hours(duracao),
+            minutos = Duration.Minutes(duracao),
+            texto = (if anos > 0 then Text.From(anos) & " ano(s) " else "") &
+                    (if dias > 0 then Text.From(dias) & "d " else "") &
+                    (if horas > 0 then Text.From(horas) & "h " else "") &
+                    Text.From(minutos) & "min"
+        in if texto = "" then "Agora" else texto,
+
+    GetCards = (cursor) =>
+        let
+            vCursor = if cursor = null then "" else ", after: """ & cursor & """",
+            queryBody = "{ ""query"": ""{ allCards(pipeId: " & vPipeID & ", first: 50" & vCursor & ") { pageInfo { hasNextPage endCursor } edges { node { id title createdAt updated_at createdBy { name } current_phase { name } fields { name value } phases_history { phase { name } firstTimeIn lastTimeOut } } } } }"" }",
+            response = Web.Contents(vUrl, [Headers = [#"Authorization"=vToken, #"Content-Type"="application/json"], Content = Text.ToBinary(queryBody)]),
+            json = Json.Document(response)[data][allCards]
+        in json,
+
+    AllPages = List.Generate(() => [Result = GetCards(null)], each [Result] <> null, each [Result = if [Result][pageInfo][hasNextPage] then GetCards([Result][pageInfo][endCursor]) else null], each [Result][edges]),
+    CombinedList = List.Combine(AllPages),
+    #"Tabela Inicial" = Table.FromList(CombinedList, Splitter.SplitByNothing(), null, null, ExtraValues.Error),
+    #"Expansão Node" = Table.ExpandRecordColumn(#"Tabela Inicial", "Column1", {"node"}),
+    #"Colunas Base" = Table.ExpandRecordColumn(#"Expansão Node", "node", {"id", "title", "createdAt", "updated_at", "createdBy", "current_phase", "fields", "phases_history"}),
+    
+    // Tratamento do Histórico de Fases
+    #"Expandir Histórico" = Table.ExpandListColumn(#"Colunas Base", "phases_history"),
+    #"Detalhar Histórico" = Table.ExpandRecordColumn(#"Expandir Histórico", "phases_history", {"phase", "firstTimeIn", "lastTimeOut"}),
+    #"Nome Fase" = Table.ExpandRecordColumn(#"Detalhar Histórico", "phase", {"name"}, {"Fase do Histórico"}),
+    
+    // Padronização de Datas e Cálculos
+    #"Datas Convertidas" = Table.TransformColumnTypes(#"Nome Fase",{
+        {"firstTimeIn", type datetime}, 
+        {"lastTimeOut", type datetime}, 
+        {"createdAt", type datetime}, 
+        {"updated_at", type datetime}
+    }),
+
+    #"Cálculo Duração" = Table.AddColumn(#"Datas Convertidas", "Duração na Fase", each (if [lastTimeOut] = null then vAgora else [lastTimeOut]) - [firstTimeIn]),
+    
+    // Colunas de exibição bonitas
+    #"Colunas Formatadas" = Table.AddColumn(#"Cálculo Duração", "Entrada na Fase", each DateTime.ToText([firstTimeIn], "dd/MM/yyyy HH:mm"), type text),
+    #"Saída Formatada" = Table.AddColumn(#"Colunas Formatadas", "Saída da Fase", each if [lastTimeOut] = null then "Ainda na fase" else DateTime.ToText([lastTimeOut], "dd/MM/yyyy HH:mm"), type text),
+    #"Tempo Texto" = Table.AddColumn(#"Saída Formatada", "Tempo Gasto na Fase", each fnFormatarTempo([Duração na Fase]), type text),
+
+    // Limpeza para o Pivot (Campos customizados)
+    #"Criador" = Table.ExpandRecordColumn(#"Tempo Texto", "createdBy", {"name"}, {"Criador"}),
+    #"Fase Atual" = Table.ExpandRecordColumn(#"Criador", "current_phase", {"name"}, {"Fase Atual"}),
+    #"Campos Expand" = Table.ExpandListColumn(#"Fase Atual", "fields"),
+    #"Campos Detalhe" = Table.ExpandRecordColumn(#"Campos Expand", "fields", {"name", "value"}),
+    #"Filtro" = Table.SelectRows(#"Campos Detalhe", each [name] <> null),
+
+    // Agrupamento e Pivot Final
+    #"Agrupado" = Table.Group(#"Filtro", {"id", "title", "Criador", "Fase Atual", "Fase do Histórico", "Entrada na Fase", "Saída da Fase", "Tempo Gasto na Fase", "name"}, {
+        {"Valor", each List.First(List.RemoveItems([value], {null, ""})), type any}
+    }),
+    #"Pivot" = Table.Pivot(#"Agrupado", List.Distinct(#"Agrupado"[name]), "name", "Valor"),
+    
+    #"Final" = Table.ReplaceValue(#"Pivot", null, "Não Definido", Replacer.ReplaceValue, Table.ColumnNames(#"Pivot"))
+in
+    #"Final"

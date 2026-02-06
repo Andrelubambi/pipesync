@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Query, Depends, BackgroundTasks
+from fastapi import FastAPI, Header, HTTPException, Query, Depends, BackgroundTasks, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_400_BAD_REQUEST
 
@@ -128,7 +128,10 @@ def export_to_server(
         raise HTTPException(status_code=500, detail="Erro interno ao processar arquivo.")
 
 @app.post("/pipefy/webhook", tags=["Webhooks"])
-async def handle_pipefy_webhook(payload: dict, _ : str = Depends(validate_api_access)):
-    """Webhook protegido apenas pela chave mestre."""
-    logger.info(f"Webhook: {payload.get('action')}")
-    return {"status": "received"}
+async def handle_pipefy_webhook(request: Request): # Usa Request diretamente
+    try:
+        payload = await request.json()
+        logger.info(f"Webhook recebido: {payload.get('action')}")
+        return {"status": "received"}
+    except Exception:
+        return {"status": "empty_or_invalid_payload"}
