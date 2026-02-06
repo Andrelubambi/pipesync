@@ -167,7 +167,7 @@ def generate_excel_report_to_server(pipe_id: str, token: str):
 
 def generate_excel_stream(pipe_id: str, token: str):
     """Gera o relatório Excel em memória e retorna o buffer BytesIO."""
-    print(f"[LOG] Iniciando geração de stream para o Pipe: {pipe_id}")
+    logger.info(f"Gerando stream para Pipe: {pipe_id}")
     
     # 1. Obter Dados
     meta = get_pipe_metadata(pipe_id, token)
