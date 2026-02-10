@@ -134,4 +134,5 @@ async def handle_pipefy_webhook(request: Request): # Usa Request diretamente
         logger.info(f"Webhook recebido: {payload.get('action')}")
         return {"status": "received"}
     except Exception:
-        return {"status": "empty_or_invalid_payload"}
+        logger.error("Erro ao processar webhook", exc_info=True)
+        raise HTTPException(status_code=400, detail="Payload inválido.")
