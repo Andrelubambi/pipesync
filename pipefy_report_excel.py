@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from datetime import datetime
 import requests
+import time
 import pandas as pd
 from dotenv import load_dotenv, find_dotenv
 
@@ -86,26 +87,77 @@ def format_duration_human(duration):
 
 # ---------- Processamento de Dados ----------
 
-def execute_gql(query: str, variables: dict, token: str):
+
+
+def execute_gql(query: str, variables: dict, token: str, retries=3):
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    response = requests.post(API_URL, headers=headers, json={"query": query, "variables": variables}, timeout=60)
-    data = response.json()
-    if "errors" in data:
-        raise RuntimeError(f"Erro na Query: {data['errors']}")
-    return data["data"]
+    
+    for i in range(retries):
+        try:
+            response = requests.post(API_URL, headers=headers, json={"query": query, "variables": variables}, timeout=60)
+            data = response.json()
+            
+            if "errors" in data:
+                # Se for erro de servidor, tentamos novamente após um breve delay
+                if any(err.get('extensions', {}).get('code') == 'INTERNAL_SERVER_ERROR' for err in data['errors']):
+                    logger.warning(f"Tentativa {i+1} falhou com erro de servidor. Tentando novamente...")
+                    time.sleep(2 * (i + 1)) # Espera progressiva (2s, 4s...)
+                    continue
+                raise RuntimeError(f"Erro na Query: {data['errors']}")
+            
+            return data["data"]
+        except (requests.exceptions.RequestException, Exception) as e:
+            if i == retries - 1: raise e
+            time.sleep(2)
 
 def fetch_all_cards(pipe_id: str, token: str):
     cursor = None
     all_nodes = []
+    start_time = time.time()
+    
+    # Query segura para contagem (cards_count é padrão no objeto Pipe)
+    count_query = "{ pipe(id: %s) { cards_count } }" % pipe_id
+    
+    try:
+        meta_data = execute_gql(count_query, {}, token)
+        total_cards = meta_data["pipe"].get("cards_count", 0)
+    except Exception as e:
+        logger.warning(f"⚠️ Não foi possível obter contagem total: {e}")
+        total_cards = 0
+
+    logger.info(f"🔍 Pipe {pipe_id}: Iniciando extração de aproximadamente {total_cards} cards.")
+
     while True:
-        data = execute_gql(CARDS_QUERY, {"pipeId": pipe_id, "first": 50, "after": cursor}, token)
+        batch_start = time.time()
+        
+        # Chamada da API
+        data = execute_gql(CARDS_QUERY, {"pipeId": pipe_id, "first": 30, "after": cursor}, token)
         cards_data = data["cards"]
-        all_nodes.extend([edge["node"] for edge in cards_data["edges"]])
+        
+        # Processamento do lote
+        batch_nodes = [edge["node"] for edge in cards_data["edges"]]
+        all_nodes.extend(batch_nodes)
+        
+        # Métricas de Log
+        lidos = len(all_nodes)
+        batch_time = time.time() - batch_start
+        
+        if total_cards > 0:
+            percent = (lidos / total_cards) * 100
+            logger.info(f"📥 Progresso: {lidos}/{total_cards} ({percent:.1f}%) | Lote: {batch_time:.2f}s | Faltam: {max(0, total_cards - lidos)}")
+        else:
+            logger.info(f"📥 Progresso: {lidos} cards lidos | Lote: {batch_time:.2f}s")
+
+        # Paginação
         if cards_data["pageInfo"]["hasNextPage"]:
             cursor = cards_data["pageInfo"]["endCursor"]
         else:
             break
+            
+    total_time = time.time() - start_time
+    logger.info(f"✅ Extração finalizada: {len(all_nodes)} cards em {total_time:.2f}s.")
     return all_nodes
+
 
 def process_cards_to_history_df(cards_nodes):
     v_agora = pd.Timestamp.now(tz='UTC')
@@ -126,6 +178,7 @@ def process_cards_to_history_df(cards_nodes):
                 "Card ID": card.get("id"),
                 "Título": card.get("title"),
                 "Criador": (card.get("createdBy") or {}).get("name"),
+                "Criado em": format_to_angola_time(card.get("createdAt")),
                 "Fase Atual": (card.get("current_phase") or {}).get("name"),
                 "Fase do Histórico": (history.get("phase") or {}).get("name"),
                 "Entrada na Fase": format_to_angola_time(history.get("firstTimeIn")),
@@ -176,7 +229,8 @@ def generate_excel_report_to_server(pipe_id: str, token: str):
     """Salva no disco para uso local ou debug."""
     buffer = generate_excel_stream(pipe_id, token)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_path = OUTPUT_DIR / f"report_{pipe_id}_{timestamp}.xlsx"
+   # file_path = OUTPUT_DIR / f"report_{pipe_id}_{timestamp}.xlsx"
+    file_path = OUTPUT_DIR / f"report_rs_{timestamp}.xlsx"
     
     with open(file_path, "wb") as f:
         f.write(buffer.getbuffer())

@@ -26,9 +26,10 @@ app = FastAPI(
     description="API para exportação dinâmica de dados do Pipefy"
 )
 
-# Configurações do ambiente
-API_MASTER_SECRET = os.getenv("EVENT_SECRET_TOKEN", "")
+# Lendo exatamente os nomes que você definiu
+DEFAULT_API_TOKEN = os.getenv("TOKEN") 
 DEFAULT_PIPE_ID = os.getenv("PIPE_ID")
+API_MASTER_SECRET = os.getenv("EVENT_SECRET_TOKEN")
 
 # --- Segurança ---
 
@@ -74,21 +75,21 @@ def export_stream(
     Gera e baixa o Excel via Stream (mais eficiente).
     Exige o header 'pipefy-token' e 'x-api-key'.
     """
-    target_pipe = pipe_id or DEFAULT_PIPE_ID
+    PIPE_ID = pipe_id or DEFAULT_PIPE_ID
     
-    if not target_pipe:
+    if not PIPE_ID:
         raise HTTPException(status_code=400, detail="PIPE_ID não fornecido.")
 
     try:
-        logger.info(f"Iniciando stream para o Pipe {target_pipe}")
+        logger.info(f"Iniciando stream para o Pipe {PIPE_ID}")
         
         # O motor agora recebe o token dinamicamente
         excel_buffer = report_engine.generate_excel_stream(
-            pipe_id=target_pipe, 
+            pipe_id=PIPE_ID, 
             token=pipefy_token
         )
         
-        filename = f"Report_{target_pipe}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        filename = f"Report_{PIPE_ID}_{datetime.now().strftime('%Y%m%d')}.xlsx"
         
         return StreamingResponse(
             excel_buffer,
@@ -126,6 +127,34 @@ def export_to_server(
     except Exception as e:
         logger.exception("Erro no servidor")
         raise HTTPException(status_code=500, detail="Erro interno ao processar arquivo.")
+    
+@app.get("/data-json", tags=["Export"])
+def get_data_json_simple():
+    """
+    Endpoint para Excel. Usa as variáveis locais TOKEN e PIPE_ID.
+    """
+    try:
+        # Validação de segurança interna
+        if not DEFAULT_API_TOKEN or not DEFAULT_PIPE_ID:
+            raise HTTPException(
+                status_code=500, 
+                detail="Erro: Variáveis TOKEN ou PIPE_ID não encontradas no servidor."
+            )
+
+        logger.info(f"Excel requisitando dados para o Pipe {DEFAULT_PIPE_ID}")
+        
+        # 1. Coleta os dados usando o motor
+        cards = report_engine.fetch_all_cards(DEFAULT_PIPE_ID, DEFAULT_API_TOKEN)
+        
+        # 2. Processa os dados (mantendo os nomes de colunas que você definiu)
+        df = report_engine.process_cards_to_history_df(cards)
+        
+        # 3. Converte para JSON compatível com Power Query
+        return df.to_dict(orient="records")
+
+    except Exception as e:
+        logger.error(f"Erro no processamento JSON: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e)) 
 
 @app.post("/pipefy/webhook", tags=["Webhooks"])
 async def handle_pipefy_webhook(request: Request): # Usa Request diretamente
@@ -136,3 +165,10 @@ async def handle_pipefy_webhook(request: Request): # Usa Request diretamente
     except Exception:
         logger.error("Erro ao processar webhook", exc_info=True)
         raise HTTPException(status_code=400, detail="Payload inválido.")
+    
+
+if __name__ == "__main__":
+    import uvicorn
+    # O Render exige que leiamos a porta da variável de ambiente PORT
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)    
