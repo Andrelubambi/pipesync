@@ -76,8 +76,8 @@ def export_report(
     pipefy_token: str = Header(..., description="Token JWT do Pipefy")
 ):
     """
-    Gera o Excel no servidor e retorna um link para download.
-    Arquivos antigos serão limpos automaticamente.
+    Gera o Excel no servidor e retorna para download.
+    Arquivos antigos são limpos automaticamente.
     """
     cleanup_old_files()  # Limpa arquivos antigos
 
@@ -89,10 +89,11 @@ def export_report(
         logger.info(f"Relatório gerado: {file_path}")
 
         # 2️⃣ Retornar o arquivo para download
+        file_path_obj = Path(file_path)  # Garantir que seja Path
         return FileResponse(
-            path=file_path,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=file_path.name
+            path=file_path_obj,
+            filename=file_path_obj.name,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     
     except Exception as e:
