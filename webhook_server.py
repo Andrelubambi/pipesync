@@ -70,30 +70,26 @@ def health_check():
         "server_time": datetime.now().isoformat()
     }
 
+from fastapi.responses import StreamingResponse
+
 @app.get("/export", tags=["Export"])
 def export_report(
     pipe_id: str = Query(..., description="ID do Pipe"),
     pipefy_token: str = Header(..., description="Token JWT do Pipefy")
 ):
-    """
-    Gera o Excel no servidor e retorna para download.
-    Arquivos antigos são limpos automaticamente.
-    """
-    cleanup_old_files()  # Limpa arquivos antigos
-
     try:
-        logger.info(f"Iniciando geração de relatório para Pipe: {pipe_id}")
+        logger.info(f"Iniciando geração de relatório em memória para Pipe: {pipe_id}")
         
-        # 1️⃣ Gerar Excel no disco
-        file_path = report_engine.generate_excel_report_to_server(pipe_id, pipefy_token)
-        logger.info(f"Relatório gerado: {file_path}")
-
-        # 2️⃣ Retornar o arquivo para download
-        file_path_obj = Path(file_path)  # Garantir que seja Path
-        return FileResponse(
-            path=file_path_obj,
-            filename=file_path_obj.name,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        # Gera o buffer em memória (BytesIO)
+        output_buffer = report_engine.generate_excel_stream(pipe_id, pipefy_token)
+        
+        filename = f"report_{pipe_id}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        
+        # Retorna diretamente para o utilizador sem salvar no servidor
+        return StreamingResponse(
+            output_buffer,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
     
     except Exception as e:
