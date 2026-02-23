@@ -19,6 +19,7 @@ TOKEN = os.getenv("PIPEFY_TOKEN") or os.getenv("TOKEN")
 API_URL = "https://api.pipefy.com/graphql"
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "./data"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+PHASE_ID_IGNORAR = "317368281"
 
 # ---------- Queries GraphQL ----------
 PIPE_SCHEMA_QUERY = """
@@ -34,22 +35,27 @@ query ($pipeId: ID!){
 }
 """
 
-CARDS_QUERY = """
-query GetCards($pipeId: ID!, $first: Int, $after: String) {
-  cards(pipe_id: $pipeId, first: $first, after: $after) {
-    pageInfo { hasNextPage endCursor }
-    edges {
-      node {
-        id
-        title
-        createdAt
-        updated_at
-        createdBy { name }
-        current_phase { name }
-        phases_history {
-          phase { name }
-          firstTimeIn
-          lastTimeOut
+PHASE_CARDS_QUERY = """
+query GetPhaseCards($phaseId: ID!, $first: Int!, $after: String) {
+  phase(id: $phaseId) {
+    cards(first: $first, after: $after) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      edges {
+        node {
+          id
+          title
+          createdAt
+          updated_at
+          createdBy { name }
+          current_phase { name }
+          phases_history {
+            phase { name }
+            firstTimeIn
+            lastTimeOut
+          }
         }
       }
     }
@@ -110,52 +116,60 @@ def execute_gql(query: str, variables: dict, token: str, retries=3):
             if i == retries - 1: raise e
             time.sleep(2)
 
+def get_valid_phase_ids(pipe_id: str, token: str):
+    phases = get_pipe_phases_details(pipe_id, token)
+
+    if not isinstance(phases, list):
+        raise RuntimeError("Erro ao obter fases do pipe")
+
+    return [
+        p["id"]
+        for p in phases
+        if p["id"] != PHASE_ID_IGNORAR
+    ]            
+
+
+
 def fetch_all_cards(pipe_id: str, token: str):
-    cursor = None
     all_nodes = []
     start_time = time.time()
-    
-    # Query segura para contagem (cards_count é padrão no objeto Pipe)
-    count_query = "{ pipe(id: %s) { cards_count } }" % pipe_id
-    
-    try:
-        meta_data = execute_gql(count_query, {}, token)
-        total_cards = meta_data["pipe"].get("cards_count", 0)
-    except Exception as e:
-        logger.warning(f"⚠️ Não foi possível obter contagem total: {e}")
-        total_cards = 0
 
-    logger.info(f"🔍 Pipe {pipe_id}: Iniciando extração de aproximadamente {total_cards} cards.")
+    logger.info("🔎 Obtendo fases...")
+    phases = get_pipe_phases_details(pipe_id, token)
 
-    while True:
-        batch_start = time.time()
-        
-        # Chamada da API
-        data = execute_gql(CARDS_QUERY, {"pipeId": pipe_id, "first": 30, "after": cursor}, token)
-        cards_data = data["cards"]
-        
-        # Processamento do lote
-        batch_nodes = [edge["node"] for edge in cards_data["edges"]]
-        all_nodes.extend(batch_nodes)
-        
-        # Métricas de Log
-        lidos = len(all_nodes)
-        batch_time = time.time() - batch_start
-        
-        if total_cards > 0:
-            percent = (lidos / total_cards) * 100
-            logger.info(f"📥 Progresso: {lidos}/{total_cards} ({percent:.1f}%) | Lote: {batch_time:.2f}s | Faltam: {max(0, total_cards - lidos)}")
-        else:
-            logger.info(f"📥 Progresso: {lidos} cards lidos | Lote: {batch_time:.2f}s")
+    valid_phases = [
+        p for p in phases
+        if p["id"] != "317368281"
+    ]
 
-        # Paginação
-        if cards_data["pageInfo"]["hasNextPage"]:
-            cursor = cards_data["pageInfo"]["endCursor"]
-        else:
-            break
-            
-    total_time = time.time() - start_time
-    logger.info(f"✅ Extração finalizada: {len(all_nodes)} cards em {total_time:.2f}s.")
+    logger.info(f"📊 Fases consideradas: {len(valid_phases)}")
+
+    for phase in valid_phases:
+        logger.info(f"➡ Processando fase: {phase['name']}")
+
+        cursor = None
+
+        while True:
+            variables = {
+                "phaseId": phase["id"],
+                "first": 50,
+                "after": cursor
+            }
+
+            data = execute_gql(PHASE_CARDS_QUERY, variables, token)
+            cards_data = data["phase"]["cards"]
+
+            batch_nodes = [edge["node"] for edge in cards_data["edges"]]
+            all_nodes.extend(batch_nodes)
+
+            if cards_data["pageInfo"]["hasNextPage"]:
+                cursor = cards_data["pageInfo"]["endCursor"]
+            else:
+                break
+
+    logger.info(f"✅ Total final de cards: {len(all_nodes)}")
+    logger.info(f"⏱ Tempo total: {time.time() - start_time:.2f}s")
+
     return all_nodes
 
 
@@ -189,6 +203,36 @@ def process_cards_to_history_df(cards_nodes):
             })
     
     return pd.DataFrame(rows)
+
+def get_pipe_phases_details(pipe_id: str, token: str):
+    """
+    Retorna os nomes e IDs das fases do Pipe.
+    """
+    query = """
+    query ($pipeId: ID!){
+      pipe(id: $pipeId){
+        phases {
+          id
+          name
+        }
+      }
+    }
+    """
+    try:
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        # Note que removi o ponto e vírgula conforme sua instrução
+        response = requests.post(API_URL, headers=headers, json={"query": query, "variables": {"pipeId": pipe_id}}, timeout=10)
+        data = response.json()
+        
+        if "errors" in data:
+            return {"erro": data["errors"]}
+            
+        phases = data["data"]["pipe"]["phases"]
+        # Retorna uma lista de objetos com ID e Nome
+        return [{"id": p["id"], "name": p["name"]} for p in phases]
+        
+    except Exception as e:
+        return {"erro": f"Falha na conexão: {str(e)}"}
 
 # ---------- Geração do Excel ----------
 
@@ -235,3 +279,4 @@ def generate_excel_report_to_server(pipe_id: str, token: str):
     with open(file_path, "wb") as f:
         f.write(buffer.getbuffer())
     return str(file_path)
+

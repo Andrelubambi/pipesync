@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from starlette.status import HTTP_401_UNAUTHORIZED
 
 # Importação do motor de relatório
-import pipefy_report_excel as report_engine
+import pipefy_report as report_engine
 
 # Configuração de Logging para facilitar o debug no terminal
 logging.basicConfig(
@@ -88,7 +88,7 @@ def export_stream(
             excel_buffer,
             media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             headers={
-                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Disposition": f"attachment filename={filename}",
                 "Cache-Control": "no-cache"
             }
         )
@@ -121,6 +121,21 @@ async def handle_pipefy_webhook(request: Request):
     except Exception:
         logger.error("Erro ao processar webhook", exc_info=True)
         raise HTTPException(status_code=400, detail="Payload inválido.")
+    
+@app.get("/debug-phases", tags=["Debug"])
+def debug_phases(
+    pipe_id: Optional[str] = Query(None),
+    pipefy_token: str = Header(...)
+):
+    pid = pipe_id or DEFAULT_PIPE_ID
+    # Agora recebemos a lista completa (ID + Nome)
+    fases_detalhadas = report_engine.get_pipe_phases_details(pid, pipefy_token)
+    
+    return {
+        "pipe_id": pid, 
+        "total_fases": len(fases_detalhadas) if isinstance(fases_detalhadas, list) else 0,
+        "fases": fases_detalhadas
+    }       
 
 if __name__ == "__main__":
     import uvicorn
