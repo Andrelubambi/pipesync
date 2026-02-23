@@ -1,13 +1,13 @@
 import logging
 import os
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Query, Depends, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from starlette.status import HTTP_401_UNAUTHORIZED
 
 # Importação do motor de relatório
@@ -31,6 +31,9 @@ app = FastAPI(
 DEFAULT_API_TOKEN = os.getenv("TOKEN") 
 DEFAULT_PIPE_ID = os.getenv("PIPE_ID")
 API_MASTER_SECRET = os.getenv("EVENT_SECRET_TOKEN")
+OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "./output"))
+EXPIRE_HOURS = int(os.getenv("EXPIRE_HOURS", 24))
+OUTPUT_DIR.mkdir(exist_ok=True)
 
 # --- Segurança ---
 
@@ -46,6 +49,18 @@ def validate_api_access(x_api_key: str = Header(None, alias="x-api-key")):
         )
     return x_api_key
 
+def cleanup_old_files():
+    """Remove arquivos antigos do OUTPUT_DIR para não lotar o servidor."""
+    now = datetime.now()
+    for f in OUTPUT_DIR.glob("*.xlsx"):
+        file_age = now - datetime.fromtimestamp(f.stat().st_mtime)
+        if file_age > timedelta(hours=EXPIRE_HOURS):
+            try:
+                f.unlink()
+                logger.info(f"Arquivo antigo removido: {f.name}")
+            except Exception as e:
+                logger.warning(f"Falha ao remover {f.name}: {e}")
+
 # --- Endpoints ---
 
 @app.get("/", tags=["Health"])
@@ -56,44 +71,32 @@ def health_check():
     }
 
 @app.get("/export", tags=["Export"])
-def export_stream(
-    pipe_id: Optional[str] = Query(None, description="ID do Pipe"),
-    pipefy_token: str = Header(..., description="Token JWT do Pipefy"),
-    _ : str = Depends(validate_api_access)
+def export_report(
+    pipe_id: str = Query(..., description="ID do Pipe"),
+    pipefy_token: str = Header(..., description="Token JWT do Pipefy")
 ):
     """
-    Gera e baixa o Excel via Stream diretamente no navegador ou Swagger.
-    Não salva nada no disco do servidor.
+    Gera o Excel no servidor e retorna um link para download.
+    Arquivos antigos serão limpos automaticamente.
     """
-    PIPE_ID = pipe_id or DEFAULT_PIPE_ID
-    if not PIPE_ID:
-        raise HTTPException(status_code=400, detail="PIPE_ID não fornecido.")
+    cleanup_old_files()  # Limpa arquivos antigos
 
     try:
-        logger.info(f"Iniciando geração de relatório para download direto: Pipe {PIPE_ID}")
+        logger.info(f"Iniciando geração de relatório para Pipe: {pipe_id}")
         
-        # O motor gera o Excel em memória (BytesIO)
-        excel_buffer = report_engine.generate_excel_stream(
-            pipe_id=PIPE_ID, 
-            token=pipefy_token
+        # 1️⃣ Gerar Excel no disco
+        file_path = report_engine.generate_excel_report_to_server(pipe_id, pipefy_token)
+        logger.info(f"Relatório gerado: {file_path}")
+
+        # 2️⃣ Retornar o arquivo para download
+        return FileResponse(
+            path=file_path,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename=file_path.name
         )
-        
-        # Garante que o ponteiro do buffer está no início
-        excel_buffer.seek(0)
-        
-        filename = f"Report_RS_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        
-        # Retorna o stream para o navegador baixar imediatamente
-        return StreamingResponse(
-            excel_buffer,
-            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            headers={
-                "Content-Disposition": f"attachment filename={filename}",
-                "Cache-Control": "no-cache"
-            }
-        )
+    
     except Exception as e:
-        logger.exception("Falha na exportação direta")
+        logger.exception("Falha na geração do relatório")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/data-json", tags=["Export"])
