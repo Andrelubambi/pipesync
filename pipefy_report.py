@@ -63,7 +63,125 @@ query GetPhaseCards($phaseId: ID!, $first: Int!, $after: String) {
 }
 """
 
+REFINED_DATA_QUERY = """
+query GetRefinedCards($phaseId: ID!, $first: Int!, $after: String) {
+  phase(id: $phaseId) {
+    cards(first: $first, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      edges {
+        node {
+          id
+          title
+          createdAt
+          updated_at
+          createdBy { name }
+          current_phase { name }
+          assignees { name }
+          labels { name }
+          fields { name value }
+          phases_history {
+            phase { name }
+            firstTimeIn
+            lastTimeOut
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
 # ---------- Funções de Apoio ----------
+def process_refined_data(cards_nodes):
+    v_agora = pd.Timestamp.now(tz='UTC')
+    rows = []
+
+    for card in cards_nodes:
+        # Extração de campos customizados do Pipefy
+        #fields = {f["label"]: f["value"] for f in card.get("fields", [])}
+        fields = {f["name"]: f["value"] for f in card.get("fields", [])}
+        history = card.get("phases_history", [])
+
+        # Função auxiliar para calcular tempo total numa fase específica
+        def calc_tempo_fase(nome_fase):
+            total = pd.Timedelta(0)
+            entries = [h for h in history if h["phase"]["name"] == nome_fase]
+            for e in entries:
+                t_in = pd.to_datetime(e["firstTimeIn"], utc=True)
+                t_out = pd.to_datetime(e["lastTimeOut"], utc=True) if e["lastTimeOut"] else v_agora
+                total += (t_out - t_in)
+            return total.days
+
+        # Função auxiliar para pegar a primeira data de entrada numa fase
+        def data_primeira_entrada(nome_fase):
+            entries = [h for h in history if h["phase"]["name"] == nome_fase]
+            if not entries: return None
+            # Pega a menor data de entrada
+            primeira = min([pd.to_datetime(e["firstTimeIn"], utc=True) for e in entries])
+            # Formata para o tempo de Angola (UTC+1)
+            return (primeira + pd.Timedelta(hours=1)).tz_localize(None)
+
+        # Montagem do dicionário seguindo EXATAMENTE a ordem das colunas pedidas
+        registro = {
+            "Título": card.get("title"),
+            "Fase atual": (card.get("current_phase") or {}).get("name"),
+            "Criador": (card.get("createdBy") or {}).get("name"),
+            "Responsáveis": ", ".join([a["name"] for a in card.get("assignees", [])]),
+            "Criado em": format_to_angola_time(card.get("createdAt")),
+            "DRH - Local da Admissão": fields.get("DRH - Local da Admissão"),
+            "Tempo total na fase 2.13 Envio Infor. DTI | DT| RH (dias)": calc_tempo_fase("2.13 Envio Infor. DTI | DT| RH"),
+            "Tempo total na fase 2.12 Candidatos Contratados (dias)": calc_tempo_fase("2.12 Candidatos Contratados"),
+            "Tempo total na fase 2.11.1 Validação da Administração (dias)": calc_tempo_fase("2.11.1 Validação da Administração"),
+            "Tempo total na fase 2.11 Apresentar Proposta (dias)": calc_tempo_fase("2.11 Apresentar Proposta"),
+            "Tempo total na fase 2.10.1 Validação DCH (dias)": calc_tempo_fase("2.10.1 Validação DCH"),
+            "Tempo total na fase 2.18 Candidatos em Standby (dias)": calc_tempo_fase("2.18 Candidatos em Standby"),
+            "Tempo total na fase 2.3 Marcar Entrevista (dias)": calc_tempo_fase("2.3 Marcar Entrevista"),
+            "Tempo total na fase 2.6 Marcar Entrevista Técnica (dias)": calc_tempo_fase("2.6 Marcar Entrevista Técnica"),
+            "Tempo total na fase 2.5 Avaliação pelo Cliente (dias)": calc_tempo_fase("2.5 Avaliação pelo Cliente"),
+            "Tempo total na fase 2.4 Relatório da Entrevista DRS (dias)": calc_tempo_fase("2.4 Relatório da Entrevista DRS"),
+            "Tempo total na fase 2.10 Validação Cliente (dias)": calc_tempo_fase("2.10 Validação Cliente"),
+            "Tempo total na fase 2.11.0 Resposta do candidato (dias)": calc_tempo_fase("2.11.0 Resposta do candidato"),
+            "Código": card.get("id"),
+            "Etiquetas": ", ".join([l["name"] for l in card.get("labels", [])]),
+            "Atualizado em": format_to_angola_time(card.get("updated_at")),
+            "Oportunidade de Emprego": fields.get("Oportunidade de Emprego"),
+            "Nome": fields.get("Nome"),
+            "Nacionalidade": fields.get("Nacionalidade"),
+            "Empresa Actual": fields.get("Empresa Actual"),
+            "Grau de Habilitação Académica": fields.get("Grau de Habilitação Académica"),
+            "Área de Formação": fields.get("Área de Formação"),
+            "AV- Motivação do Candidato": fields.get("AV- Motivação do Candidato"),
+            "AV-Percurso Profissional": fields.get("AV-Percurso Profissional"),
+            "AV-Percurso Académico": fields.get("AV-Percurso Académico"),
+            "Parecer do Recrutador": fields.get("Parecer do Recrutador"),
+            "Tipo de Entrevista": fields.get("Tipo de Entrevista"),
+            "Parecer do DRH. DRS": fields.get("Parecer do DRH. DRS"),
+            "Parecer Técnico": fields.get("Parecer Técnico"),
+            "Tempo total na fase 2.8 Elaborar Proposta (dias)": calc_tempo_fase("2.8 Elaborar Proposta"),
+            "Primeira vez que entrou na fase 2.12 Candidatos Contratados": data_primeira_entrada("2.12 Candidatos Contratados"),
+            "Tempo total na fase 2.7 Avaliação pelo Cliente (dias)": calc_tempo_fase("2.7 Avaliação pelo Cliente"),
+            "Primeira vez que entrou na fase 2.17 Candidatos Desistiram": data_primeira_entrada("2.17 Candidatos Desistiram"),
+            "Tempo total na fase 2.2  Breve Avaliação do Candidato (dias)": calc_tempo_fase("2.2  Breve Avaliação do Candidato"),
+            "Primeira vez que entrou na fase 2.14 Processos Concluídos": data_primeira_entrada("2.14 Processos Concluídos"),
+            "Tempo total na fase 2.9 Validação DRS (dias)": calc_tempo_fase("2.9 Validação DRS"),
+        }
+        rows.append(registro)
+
+    return pd.DataFrame(rows)
+
+
+def generate_refined_excel(pipe_id: str, token: str):
+    logger.info(f"Gerando relatório refinado para Pipe: {pipe_id}")
+    # Nota: Reutiliza a lógica de fetch_all_cards mas passando a nova query REFINED_DATA_QUERY
+    # Para brevidade, assumimos que fetch_all_cards foi adaptada ou usa esta query.
+    cards = fetch_all_cards_refined(pipe_id, token) 
+    df = process_refined_data(cards)
+    
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Dados Refinados", index=False)
+    output.seek(0)
+    return output
 
 def format_to_angola_time(iso_date: str):
     if not iso_date: return None
@@ -128,7 +246,52 @@ def get_valid_phase_ids(pipe_id: str, token: str):
         if p["id"] != PHASE_ID_IGNORAR
     ]            
 
+def fetch_all_cards_refined(pipe_id: str, token: str):
+    """
+    Versão otimizada que busca cards de todas as fases usando a query refinada.
+    """
+    all_nodes = []
+    start_time = time.time()
 
+    logger.info("🔎 Obtendo fases para relatório refinado...")
+    phases = get_pipe_phases_details(pipe_id, token)
+
+    # Filtrar fases a ignorar
+    valid_phases = [
+        p for p in phases
+        if p["id"] != PHASE_ID_IGNORAR
+    ]
+
+    for phase in valid_phases:
+        logger.info(f"➡ Extraindo dados refinados da fase: {phase['name']}")
+        cursor = None
+
+        while True:
+            variables = {
+                "phaseId": phase["id"],
+                "first": 50,
+                "after": cursor
+            }
+
+            # Importante: Usa a REFINED_DATA_QUERY definida no topo do seu script
+            data = execute_gql(REFINED_DATA_QUERY, variables, token)
+            
+            if not data or "phase" not in data:
+                break
+
+            cards_data = data["phase"]["cards"]
+            batch_nodes = [edge["node"] for edge in cards_data["edges"]]
+            all_nodes.extend(batch_nodes)
+
+            if cards_data["pageInfo"]["hasNextPage"]:
+                cursor = cards_data["pageInfo"]["endCursor"]
+            else:
+                break
+
+    logger.info(f"✅ Extração concluída: {len(all_nodes)} cards processados.")
+    logger.info(f"⏱ Tempo decorrido: {time.time() - start_time:.2f}s")
+
+    return all_nodes
 
 def fetch_all_cards(pipe_id: str, token: str):
     all_nodes = []

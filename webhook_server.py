@@ -62,7 +62,7 @@ def cleanup_old_files():
                 logger.warning(f"Falha ao remover {f.name}: {e}")
 
 # --- Endpoints ---
-
+ 
 @app.get("/", tags=["Health"])
 def health_check():
     return {
@@ -71,6 +71,29 @@ def health_check():
     }
 
 from fastapi.responses import StreamingResponse
+
+@app.get("/export-refined", tags=["Export"])
+def export_refined_report(
+    pipe_id: str = Query(..., description="ID do Pipe"),
+    pipefy_token: str = Header(..., description="Token JWT do Pipefy")
+):
+    try:
+        logger.info(f"Requisição de relatório refinado para Pipe: {pipe_id}")
+        
+        # Chama o novo método focado
+        output_buffer = report_engine.generate_refined_excel(pipe_id, pipefy_token)
+        
+        filename = f"refined_report_{pipe_id}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        
+        return StreamingResponse(
+            output_buffer,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment filename={filename}"}
+        )
+    
+    except Exception as e:
+        logger.exception("Erro ao gerar relatório refinado")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/export", tags=["Export"])
 def export_report(
@@ -89,7 +112,7 @@ def export_report(
         return StreamingResponse(
             output_buffer,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            headers={"Content-Disposition": f"attachment filename={filename}"}
         )
     
     except Exception as e:
